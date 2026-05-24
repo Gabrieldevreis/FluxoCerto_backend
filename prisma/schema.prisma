@@ -1,13 +1,255 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
+// =============================================================
+// FluxoCerto — Prisma Schema
+// =============================================================
 
 generator client {
-  provider = "prisma-client"
+  provider = "prisma-client-js"
   output   = "../generated/prisma"
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+// =============================================================
+// ENUMS
+// =============================================================
+
+enum UserRole {
+  ADMIN
+  WAITER // garçom
+}
+
+enum Unit {
+  GRAMS
+  MILLILITERS
+  UNITS
+}
+
+enum OrderStatus {
+  PENDING    // pedido criado pelo garçom
+  CONFIRMED  // confirmado pela cozinha
+  PREPARING  // em preparo
+  DONE       // pronto para servir
+  CANCELLED  // cancelado
+}
+
+enum TransactionType {
+  INCOME   // receita (vinda de pedido confirmado)
+  EXPENSE  // despesa (lançamento manual)
+}
+
+enum CategoryOrigin {
+  SYSTEM // categorias fixas seedadas (ex: Insumos, Fixo, Variável)
+  CUSTOM // criadas pelo admin
+}
+
+// =============================================================
+// AUTH MODULE
+// =============================================================
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         UserRole @default(WAITER)
+  isActive     Boolean  @default(true)
+
+  orders    Order[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("users")
+}
+
+// =============================================================
+// STOCK MODULE — Ingredientes · Receitas · Estoque
+// =============================================================
+
+model Ingredient {
+  id   String @id @default(cuid())
+  name String @unique
+  unit Unit   // unidade base de medida do ingrediente
+
+  stock            StockEntry?
+  recipeIngredients RecipeIngredient[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("ingredients")
+}
+
+// Saldo atual de cada ingrediente no estoque
+model StockEntry {
+  id           String     @id @default(cuid())
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id])
+  ingredientId String     @unique // 1 entrada de estoque por ingrediente
+  quantity     Decimal    @db.Decimal(10, 3) // quantidade disponível
+  minimumAlert Decimal    @db.Decimal(10, 3) @default(0) // alerta de estoque mínimo
+
+  movements StockMovement[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("stock_entries")
+}
+
+// Histórico de movimentações (entrada manual, baixa por pedido)
+model StockMovement {
+  id           String        @id @default(cuid())
+  stockEntry   StockEntry    @relation(fields: [stockEntryId], references: [id])
+  stockEntryId String
+  quantity     Decimal       @db.Decimal(10, 3) // positivo = entrada, negativo = saída
+  reason       String        // ex: "Compra fornecedor", "Baixa pedido #123"
+  orderId      String?       // preenchido quando a baixa vem de um pedido
+
+  occurredAt DateTime @default(now())
+
+  @@map("stock_movements")
+}
+
+model Recipe {
+  id          String @id @default(cuid())
+  name        String @unique
+  description String?
+  yieldAmount Decimal @db.Decimal(10, 3) // rendimento (ex: 1 porção, 500g)
+  yieldUnit   Unit
+
+  ingredients RecipeIngredient[]
+  menuItems   MenuItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("recipes")
+}
+
+// Tabela associativa: quais ingredientes e quantidades compõem uma receita
+model RecipeIngredient {
+  id           String     @id @default(cuid())
+  recipe       Recipe     @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  recipeId     String
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id])
+  ingredientId String
+  quantity     Decimal    @db.Decimal(10, 3)
+  unit         Unit       // pode diferir da unidade base do ingrediente
+
+  @@unique([recipeId, ingredientId])
+  @@map("recipe_ingredients")
+}
+
+// =============================================================
+// MENU MODULE — Cardápio · Itens · Preços
+// =============================================================
+
+model MenuCategory {
+  id    String @id @default(cuid())
+  name  String @unique   // ex: Entradas, Pratos, Bebidas, Sobremesas
+  order Int    @default(0) // ordem de exibição no cardápio
+
+  items MenuItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("menu_categories")
+}
+
+model MenuItem {
+  id          String       @id @default(cuid())
+  name        String
+  description String?
+  price       Decimal      @db.Decimal(10, 2)
+  isAvailable Boolean      @default(true)
+  imageUrl    String?
+
+  category   MenuCategory @relation(fields: [categoryId], references: [id])
+  categoryId String
+
+  recipe   Recipe? @relation(fields: [recipeId], references: [id])
+  recipeId String? // opcional: item pode não ter receita vinculada (ex: bebida industrializada)
+
+  orderItems OrderItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("menu_items")
+}
+
+// =============================================================
+// ORDER MODULE — Pedidos · Status · Itens
+// =============================================================
+
+model Order {
+  id          String      @id @default(cuid())
+  tableNumber Int         // número da mesa
+  status      OrderStatus @default(PENDING)
+  notes       String?     // observações gerais do pedido
+
+  waiter   User   @relation(fields: [waiterId], references: [id])
+  waiterId String // garçom que criou o pedido
+
+  items       OrderItem[]
+  transaction Transaction? // gerada quando status = CONFIRMED
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  confirmedAt DateTime? // preenchido ao confirmar
+  doneAt      DateTime? // preenchido ao finalizar
+
+  @@map("orders")
+}
+
+model OrderItem {
+  id       String  @id @default(cuid())
+  quantity Int
+  unitPrice Decimal @db.Decimal(10, 2) // preço no momento do pedido (snapshot)
+  notes    String? // ex: "sem cebola"
+
+  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId    String
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id])
+  menuItemId String
+
+  @@map("order_items")
+}
+
+// =============================================================
+// FINANCE MODULE — Despesas · Receitas · Fluxo de Caixa
+// =============================================================
+
+model FinanceCategory {
+  id     String         @id @default(cuid())
+  name   String         @unique
+  origin CategoryOrigin @default(CUSTOM)
+  // exemplos SYSTEM: "Insumos", "Despesa Fixa", "Despesa Variável", "Receita de Pedido"
+
+  transactions Transaction[]
+
+  createdAt DateTime @default(now())
+
+  @@map("finance_categories")
+}
+
+model Transaction {
+  id          String          @id @default(cuid())
+  type        TransactionType
+  amount      Decimal         @db.Decimal(10, 2)
+  description String
+
+  category   FinanceCategory @relation(fields: [categoryId], references: [id])
+  categoryId String
+
+  // preenchido apenas quando type = INCOME e a receita veio de um pedido
+  order   Order?  @relation(fields: [orderId], references: [id])
+  orderId String? @unique // 1 transação por pedido
+
+  occurredAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@map("transactions")
 }
