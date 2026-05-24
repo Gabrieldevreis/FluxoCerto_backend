@@ -1,14 +1,14 @@
-version: '3.8'
-
 services:
   postgres:
-    image: postgres:15-alpine # Versão leve e estável do Postgres
-    container_name: nest_postgres_db
+    image: postgres:15-alpine
+    container_name: fluxo_certo_db
     restart: always
+    env_file:
+      - .env
     environment:
-      POSTGRES_USER: nest_user
-      POSTGRES_PASSWORD: nest_password
-      POSTGRES_DB: nest_db
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
       - '5432:5432'
     volumes:
